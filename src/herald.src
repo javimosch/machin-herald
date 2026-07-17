@@ -1,0 +1,160 @@
+// machin-herald — a scheduled report mailer: run a command, email its stdout.
+//
+// The design is deliberately dumb: herald is a PIPE, not a template engine. Each target
+// names a shell command; whatever that command prints becomes the email body. The source
+// owns the rendering (`hart admin digest`, a script that emits HTML, `df -h`, anything).
+// herald owns: config, running it, and delivery via Resend.
+//
+// It has NO scheduler on purpose. systemd timers (or cron) already do that correctly —
+// persistent, catch-up, logged. herald is a one-shot `send` you point a timer at.
+//
+// Agent-first: JSON on stdout, structured errors on stderr, semantic exit codes.
+// BYO key: RESEND_API_KEY in the environment, never in the config file.
+
+type Target struct {
+    name string       // target id, used by `send --target <name>`
+    to []string       // recipients
+    subject string    // email subject
+    command string    // shell command; its STDOUT becomes the body
+    format string     // html (default) | text
+}
+
+type Config struct {
+    from string       // "Name <sender@your-domain>" — must be a Resend-verified domain
+    targets []Target
+}
+
+// ---- agent-first I/O -------------------------------------------------------
+// exit codes: 0 ok · 80-89 input · 90-99 resource · 100-109 integration
+func emit(body) { println("{\"ok\":true," + body + "}") }
+func die(code, msg) { write(2, "{\"ok\":false,\"error\":" + json(msg) + "}\n")  exit(code) }
+
+func load_config(path) (cfg) {
+    raw := read_file(path)
+    if raw == "" { die(80, "config not found or empty: " + path) }
+    cfg = parse(raw, Config{})
+    if cfg.from == "" { die(80, "config: \"from\" is required (a Resend-verified sender)") }
+    if len(cfg.targets) == 0 { die(80, "config: no targets") }
+}
+
+func find_target(cfg, name) (t) {
+    for _, x := range cfg.targets {
+        if x.name == name { t = x  return t }
+    }
+    die(90, "no such target: " + name)
+}
+
+// json_list — a JSON array of strings, each properly escaped.
+func json_list(xs) (s) {
+    s = "["
+    i := 0
+    for i < len(xs) {
+        if i > 0 { s = s + "," }
+        s = s + json(xs[i])
+        i = i + 1
+    }
+    s = s + "]"
+}
+
+// send_one — run the target's command and deliver its stdout. dry=1 skips delivery.
+func send_one(cfg, t, dry) (body) {
+    if t.command == "" { die(80, "target \"" + t.name + "\": \"command\" is required") }
+    if len(t.to) == 0 { die(80, "target \"" + t.name + "\": \"to\" is required") }
+    code, out, cerr := exec(t.command)
+    if code != 0 { die(100, "target \"" + t.name + "\": command exited " + str(code) + ": " + trim(cerr)) }
+    content := trim(out)
+    if content == "" { die(100, "target \"" + t.name + "\": command produced no output") }
+    field := "html"
+    if t.format == "text" { field = "text" }
+    payload := "{\"from\":" + json(cfg.from) + ",\"to\":" + json_list(t.to) + ",\"subject\":" + json(t.subject) + ",\"" + field + "\":" + json(content) + "}"
+    if dry == 1 {
+        body = "\"target\":" + json(t.name) + ",\"dry_run\":true,\"to\":" + json_list(t.to) + ",\"format\":" + json(field) + ",\"bytes\":" + str(len(content))
+        return body
+    }
+    key := env("RESEND_API_KEY")
+    if key == "" { die(80, "RESEND_API_KEY is not set (BYO key — https://resend.com)") }
+    hdrs := []string{"authorization: Bearer " + key, "content-type: application/json"}
+    status, resp, herr := http_request("POST", "https://api.resend.com/emails", hdrs, payload)
+    if herr != "" { die(100, "resend unreachable: " + herr) }
+    if status != 200 { die(100, "resend returned " + str(status) + ": " + trim(resp)) }
+    id, _ := json_get(resp, ".id")
+    body = "\"target\":" + json(t.name) + ",\"sent\":true,\"id\":" + id + ",\"to\":" + json_list(t.to) + ",\"bytes\":" + str(len(content))
+}
+
+// ---- CLI -------------------------------------------------------------------
+
+func flagv(a, name, dflt) (v) {
+    v = dflt
+    i := 0
+    for i < len(a) {
+        if a[i] == name { if i + 1 < len(a) { v = a[i+1] } }
+        i = i + 1
+    }
+}
+
+func has_flag(a, name) (yes) {
+    yes = 0
+    i := 0
+    for i < len(a) { if a[i] == name { yes = 1 }  i = i + 1 }
+}
+
+// subcmd — the first bare word that isn't -c's value.
+func subcmd(a) (c) {
+    c = ""
+    i := 1
+    for i < len(a) {
+        x := a[i]
+        if x == "-c" || x == "--config" {
+            i = i + 2
+        } else {
+            if has_prefix(x, "-") { i = i + 1 } else { c = x  return c }
+        }
+    }
+}
+
+func cmd_list(cfg) {
+    b := "\"targets\":["
+    i := 0
+    for i < len(cfg.targets) {
+        t := cfg.targets[i]
+        if i > 0 { b = b + "," }
+        f := t.format
+        if f == "" { f = "html" }
+        b = b + "{\"name\":" + json(t.name) + ",\"to\":" + json_list(t.to) + ",\"subject\":" + json(t.subject) + ",\"format\":" + json(f) + ",\"command\":" + json(t.command) + "}"
+        i = i + 1
+    }
+    b = b + "]"
+    emit(b)
+}
+
+func cmd_send(cfg, a) {
+    dry := has_flag(a, "--dry-run")
+    name := flagv(a, "--target", "")
+    if name != "" {
+        emit(send_one(cfg, find_target(cfg, name), dry))
+        return
+    }
+    b := "\"sent\":["
+    i := 0
+    for i < len(cfg.targets) {
+        if i > 0 { b = b + "," }
+        b = b + "{" + send_one(cfg, cfg.targets[i], dry) + "}"
+        i = i + 1
+    }
+    b = b + "]"
+    emit(b)
+}
+
+func cmd_help() {
+    println("{\"ok\":true,\"name\":\"machin-herald\",\"tagline\":\"scheduled report mailer — run a command, email its stdout (Resend)\",\"usage\":\"machin-herald [-c herald.json] <send|list|help> [--target <name>] [--dry-run]\",\"commands\":{\"send\":\"run each target's command and email its stdout (--target one, --dry-run to preview)\",\"list\":\"the configured targets\",\"help\":\"this\"},\"env\":{\"RESEND_API_KEY\":\"required to send (BYO key, https://resend.com)\"},\"config\":\"{\\\"from\\\":\\\"Name <you@your-domain>\\\",\\\"targets\\\":[{\\\"name\\\":\\\"weekly\\\",\\\"to\\\":[\\\"you@x.com\\\"],\\\"subject\\\":\\\"Weekly\\\",\\\"command\\\":\\\"your-cmd\\\",\\\"format\\\":\\\"html\\\"}]}\",\"scheduling\":\"none built in — point a systemd timer or cron at `send`\"}")
+}
+
+func main() {
+    a := args()
+    c := subcmd(a)
+    if c == "" || c == "help" || c == "help-json" { cmd_help()  return }
+    cfg := load_config(flagv(a, "-c", flagv(a, "--config", "herald.json")))
+    if c == "list" { cmd_list(cfg)  return }
+    if c == "send" { cmd_send(cfg, a)  return }
+    die(80, "unknown command: " + c + " (send|list|help)")
+}

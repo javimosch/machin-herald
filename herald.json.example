@@ -1,0 +1,19 @@
+{
+  "from": "hart digest <digest@your-domain.tld>",
+  "targets": [
+    {
+      "name": "hart-weekly",
+      "to": ["you@your-domain.tld"],
+      "subject": "hart — weekly digest",
+      "command": "hart admin digest --days 7 | your-renderer",
+      "format": "html"
+    },
+    {
+      "name": "disk-daily",
+      "to": ["you@your-domain.tld"],
+      "subject": "disk report",
+      "command": "df -h",
+      "format": "text"
+    }
+  ]
+}
