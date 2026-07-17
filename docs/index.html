@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>machin-herald — run a command, email its output, on a schedule</title>
+<meta name="description" content="A scheduled report mailer as one static machin binary. Each target names a shell command; its stdout becomes the email body. No template engine, no scheduler. Delivers via Resend.">
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#0e1216;color:#e8edf2;font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}
+a{color:#3ad0c4;text-decoration:none}a:hover{text-decoration:underline}
+.wrap{max-width:760px;margin:0 auto;padding:72px 24px 96px}
+.eyebrow{font:12px ui-monospace,monospace;letter-spacing:.24em;text-transform:uppercase;color:#3ad0c4;margin:0 0 14px}
+h1{font-size:40px;line-height:1.1;letter-spacing:-.025em;margin:0 0 14px}
+h1 .g{background:linear-gradient(90deg,#86efac,#3ad0c4);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.lede{font-size:19px;color:#b4bcc8;margin:0 0 30px}
+.cta{display:flex;gap:12px;flex-wrap:wrap;margin:0 0 44px}
+.btn{display:inline-block;padding:11px 20px;border-radius:10px;font-weight:600;font-size:15px}
+.btn.primary{background:#3ad0c4;color:#062023}
+.btn.ghost{border:1px solid #232c34;color:#e8edf2}
+pre{background:#151b21;border:1px solid #232c34;border-radius:12px;padding:18px 20px;overflow-x:auto;font:13.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#e8edf2;margin:0 0 28px}
+.k{color:#3ad0c4}.c{color:#5c6773}
+h2{font-size:14px;text-transform:uppercase;letter-spacing:.14em;color:#8b97a4;margin:44px 0 14px}
+.grid{display:grid;gap:14px}
+@media(min-width:600px){.grid{grid-template-columns:1fr 1fr}}
+.card{background:#151b21;border:1px solid #232c34;border-radius:12px;padding:18px 20px}
+.card h3{margin:0 0 6px;font-size:16px;color:#e8edf2}
+.card p{margin:0;color:#8b97a4;font-size:14.5px}
+.foot{margin-top:56px;padding-top:20px;border-top:1px solid #232c34;color:#5c6773;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow">machin-herald</p>
+  <h1>Run a command. <span class="g">Email</span> its output. On a schedule.</h1>
+  <p class="lede">A scheduled report mailer as one static <a href="https://github.com/javimosch/machin">machin</a> binary &mdash; no Node, no template engine, no scheduler. Each target names a shell command; whatever it prints becomes the email body. The source owns the rendering; herald just delivers.</p>
+
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/javimosch/machin-herald">View on GitHub</a>
+    <a class="btn ghost" href="https://resend.com">Powered by Resend &rarr;</a>
+  </div>
+
+  <pre>$ machin-herald -c herald.json send --target hart-weekly
+<span class="c">{"ok":true,"target":"hart-weekly","sent":true,"id":"899fdef1-...","bytes":2413}</span></pre>
+
+  <h2>Two decisions that keep it small</h2>
+  <div class="grid">
+    <div class="card"><h3>The source owns the rendering</h3><p>herald never templates anything. Your command prints HTML or text and herald ships it &mdash; so <em>anything</em> is a report source: <span class="k">hart admin digest</span>, <span class="k">df -h</span>, a five-minute script.</p></div>
+    <div class="card"><h3>No scheduler, on purpose</h3><p>systemd timers and cron already do persistent, catch-up, logged scheduling correctly. herald is a one-shot <span class="k">send</span> you point a timer at &mdash; <span class="k">OnCalendar=</span> is your daily/weekly/monthly.</p></div>
+    <div class="card"><h3>BYO key, no secrets in config</h3><p><span class="k">RESEND_API_KEY</span> lives in the environment, never in the config file &mdash; so the config is safe to commit. <span class="k">--dry-run</span> previews without sending.</p></div>
+    <div class="card"><h3>Agent-first</h3><p>JSON on stdout, structured errors on stderr, semantic exit codes. A non-zero command exit means nothing is sent &mdash; an agent can drive it blind and parse the result.</p></div>
+  </div>
+
+  <h2>Config</h2>
+  <pre>{
+  <span class="k">"from"</span>: "hart digest &lt;digest@your-domain.tld&gt;",
+  <span class="k">"targets"</span>: [
+    { <span class="k">"name"</span>: "hart-weekly",
+      <span class="k">"to"</span>: ["you@your-domain.tld"],
+      <span class="k">"subject"</span>: "hart — weekly digest",
+      <span class="k">"command"</span>: "hart admin digest --days 7 | my-renderer",
+      <span class="k">"format"</span>: "html" }
+  ]
+}</pre>
+
+  <h2>Schedule (systemd)</h2>
+  <pre><span class="c"># herald-weekly.timer</span>
+[Timer]
+OnCalendar=Mon 08:00
+Persistent=true   <span class="c"># missed a run? fires on next boot</span></pre>
+
+  <div class="foot">
+    Built in <a href="https://github.com/javimosch/machin">machin</a> (MFL) · part of the agent-first stack by <a href="https://intrane.fr">Intrane</a> · MIT.
+  </div>
+</div>
+</body>
+</html>
